@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use bson::Document;
 use slatedb::DbSnapshot;
 use tokio::sync::Mutex;
 
@@ -17,6 +18,8 @@ pub struct CursorState {
     pub last_key: Option<Vec<u8>>,
     pub limit_remaining: Option<i32>,
     pub default_batch_size: i32,
+    /// Top-level equality filter applied on each batch (`None` = match all).
+    pub equality: Option<Document>,
 }
 
 pub struct CursorRegistry {
@@ -78,6 +81,7 @@ impl CursorState {
         last_key: Option<Vec<u8>>,
         limit_remaining: Option<i32>,
         default_batch_size: i32,
+        equality: Option<Document>,
     ) -> Self {
         let ns = format!("{db}.{collection}");
         Self {
@@ -88,6 +92,7 @@ impl CursorState {
             last_key,
             limit_remaining,
             default_batch_size,
+            equality,
         }
     }
 }
@@ -103,6 +108,7 @@ impl Clone for CursorState {
             last_key: self.last_key.clone(),
             limit_remaining: self.limit_remaining,
             default_batch_size: self.default_batch_size,
+            equality: self.equality.clone(),
         }
     }
 }

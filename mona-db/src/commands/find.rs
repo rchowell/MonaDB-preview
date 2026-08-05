@@ -1,22 +1,16 @@
 use bson::{Bson, Document};
 
+use crate::commands::filter::QueryFilter;
 use crate::cursor::{CursorRegistry, CursorState, DEFAULT_BATCH_SIZE};
 use crate::error::{Error, Result};
-use crate::storage::{scan_batch, CollectionRegistry};
+use crate::storage::{document_matches_equality, scan_batch, CollectionRegistry};
 
-/// Supported `find` filter shapes.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) enum FindFilter {
-    All,
-    ById(Bson),
-}
-
-/// Parsed `find` command (empty filter or `_id` point lookup).
+/// Parsed `find` command with empty, `_id`, or top-level equality filter.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FindCmd {
     pub db: String,
     pub collection: String,
-    pub(crate) filter: FindFilter,
+    pub(crate) filter: QueryFilter,
     pub limit: Option<i32>,
     pub skip: i32,
     pub batch_size: i32,
@@ -37,28 +31,10 @@ impl FindCmd {
             }
         };
 
-        let find_filter = if filter.is_empty() {
-            FindFilter::All
-        } else if filter.len() == 1 {
-            match filter.get("_id") {
-                Some(id) => FindFilter::ById(id.clone()),
-                None => {
-                    return Err(Error::CommandParse(
-                        "unsupported find filter: only empty filter or '_id' equality is supported"
-                            .into(),
-                    ));
-                }
-            }
-        } else {
-            return Err(Error::CommandParse(
-                "unsupported find filter: only empty filter or '_id' equality is supported".into(),
-            ));
-        };
-
         Ok(Self {
             db,
             collection,
-            filter: find_filter,
+            filter: QueryFilter::from_query(&filter)?,
             limit: parse_limit(&doc)?,
             skip: parse_skip(&doc)?,
             batch_size: parse_batch_size(&doc)?,
@@ -73,7 +49,7 @@ impl FindCmd {
         let ns = format!("{}.{}", self.db, self.collection);
 
         match &self.filter {
-            FindFilter::ById(id) => {
+            QueryFilter::ById(id) => {
                 let doc = registry.get(&self.db, &self.collection, id).await?;
                 let mut docs = Vec::new();
                 if let Some(doc) = doc {
@@ -85,7 +61,22 @@ impl FindCmd {
                 let first_batch: Vec<Bson> = docs.into_iter().map(Bson::Document).collect();
                 Ok(cursor_reply(ns, 0, first_batch, true))
             }
-            FindFilter::All => {
+            QueryFilter::Equality(eq) if eq.get("_id").is_some() => {
+                let id = eq.get("_id").expect("_id present");
+                let mut docs = Vec::new();
+                if let Some(doc) = registry.get(&self.db, &self.collection, id).await? {
+                    if document_matches_equality(&doc, eq) {
+                        docs.push(doc);
+                    }
+                }
+                if let Some(limit) = self.limit {
+                    docs.truncate(limit.max(0) as usize);
+                }
+                let first_batch: Vec<Bson> = docs.into_iter().map(Bson::Document).collect();
+                Ok(cursor_reply(ns, 0, first_batch, true))
+            }
+            QueryFilter::All | QueryFilter::Equality(_) => {
+                let equality = self.filter.equality_doc().cloned();
                 let snapshot = registry.snapshot(&self.db, &self.collection).await?;
                 let batch = scan_batch(
                     &snapshot,
@@ -93,6 +84,7 @@ impl FindCmd {
                     self.skip,
                     self.batch_size,
                     self.limit,
+                    equality.as_ref(),
                 )
                 .await?;
 
@@ -110,6 +102,7 @@ impl FindCmd {
                         batch.last_key,
                         batch.limit_remaining,
                         self.batch_size,
+                        equality,
                     ))
                     .await;
 
@@ -199,6 +192,8 @@ fn get_string(doc: &Document, key: &str) -> Result<String> {
 mod tests {
     use super::*;
     use bson::doc;
+    use slatedb::object_store::memory::InMemory;
+    use std::sync::Arc;
 
     #[test]
     fn parses_find_by_id() {
@@ -211,7 +206,7 @@ mod tests {
 
         assert_eq!(cmd.db, "test");
         assert_eq!(cmd.collection, "users");
-        assert_eq!(cmd.filter, FindFilter::ById(Bson::String("alice".into())));
+        assert_eq!(cmd.filter, QueryFilter::ById(Bson::String("alice".into())));
     }
 
     #[test]
@@ -223,8 +218,23 @@ mod tests {
         })
         .unwrap();
 
-        assert_eq!(cmd.filter, FindFilter::All);
+        assert_eq!(cmd.filter, QueryFilter::All);
         assert_eq!(cmd.batch_size, DEFAULT_BATCH_SIZE);
+    }
+
+    #[test]
+    fn parses_equality_filter() {
+        let cmd = FindCmd::from_document(doc! {
+            "find": "users",
+            "$db": "test",
+            "filter": { "name": "alice" }
+        })
+        .unwrap();
+
+        assert_eq!(
+            cmd.filter,
+            QueryFilter::Equality(doc! { "name": "alice" })
+        );
     }
 
     #[test]
@@ -243,13 +253,46 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_id_filter() {
+    fn rejects_dollar_operator_filter() {
         let err = FindCmd::from_document(doc! {
             "find": "users",
             "$db": "test",
-            "filter": { "name": "alice" }
+            "filter": { "$gt": { "score": 5 } }
         })
         .unwrap_err();
-        assert!(err.to_string().contains("unsupported find filter"));
+        assert!(err.to_string().contains("unsupported query operator"));
+    }
+
+    #[tokio::test]
+    async fn find_by_name_equality() {
+        let registry = CollectionRegistry::new(Arc::new(InMemory::new()), "find-eq-test");
+        let cursors = CursorRegistry::new();
+        registry
+            .insert("test", "users", doc! { "_id": "a", "name": "alice" })
+            .await
+            .unwrap();
+        registry
+            .insert("test", "users", doc! { "_id": "b", "name": "bob" })
+            .await
+            .unwrap();
+
+        let cmd = FindCmd::from_document(doc! {
+            "find": "users",
+            "$db": "test",
+            "filter": { "name": "bob" }
+        })
+        .unwrap();
+
+        let body = cmd.execute(&registry, &cursors).await.unwrap();
+        let batch = body
+            .get_document("cursor")
+            .unwrap()
+            .get_array("firstBatch")
+            .unwrap();
+        assert_eq!(batch.len(), 1);
+        assert_eq!(
+            batch[0].as_document().unwrap().get_str("name"),
+            Ok("bob")
+        );
     }
 }

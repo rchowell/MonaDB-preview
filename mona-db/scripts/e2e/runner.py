@@ -127,6 +127,65 @@ async def check_find_one_explicit_id(collection) -> None:
     print("  find_one explicit _id: ok")
 
 
+async def check_find_one_by_name(collection) -> None:
+    doc = await collection.find_one({"name": "bob"})
+    if doc is None or doc.get("score") != 20:
+        raise E2EError(f"find_one by name returned unexpected document: {doc}")
+    print("  find_one by name: ok")
+
+
+async def check_update_one_by_name(collection) -> None:
+    result = await collection.update_one({"name": "carol"}, {"$set": {"score": 31}})
+    if not result.acknowledged or result.matched_count != 1 or result.modified_count != 1:
+        raise E2EError(f"update_one by name failed: {result.raw_result}")
+    doc = await collection.find_one({"name": "carol"})
+    if doc is None or doc.get("score") != 31:
+        raise E2EError(f"update_one by name did not persist score=31: {doc}")
+    print("  update_one by name: ok")
+
+
+async def check_delete_one_by_name(collection) -> None:
+    result = await collection.delete_one({"name": "bob"})
+    if not result.acknowledged or result.deleted_count != 1:
+        raise E2EError(f"delete_one by name failed: {result.raw_result}")
+    doc = await collection.find_one({"name": "bob"})
+    if doc is not None:
+        raise E2EError(f"delete_one by name left document behind: {doc}")
+    print("  delete_one by name: ok")
+
+
+async def check_update_one(collection, inserted_id: Any) -> None:
+    result = await collection.update_one({"_id": inserted_id}, {"$set": {"score": 99}})
+    if not result.acknowledged or result.matched_count != 1 or result.modified_count != 1:
+        raise E2EError(f"update_one failed: {result.raw_result}")
+    doc = await collection.find_one({"_id": inserted_id})
+    if doc is None or doc.get("score") != 99:
+        raise E2EError(f"update_one did not persist score=99: {doc}")
+    print("  update_one: ok")
+
+
+async def check_delete_one(collection, inserted_id: Any) -> None:
+    result = await collection.delete_one({"_id": inserted_id})
+    if not result.acknowledged or result.deleted_count != 1:
+        raise E2EError(f"delete_one failed: {result.raw_result}")
+    doc = await collection.find_one({"_id": inserted_id})
+    if doc is not None:
+        raise E2EError(f"delete_one left document behind: {doc}")
+    print("  delete_one: ok")
+
+
+async def check_delete_many(collection) -> None:
+    clear_collection = collection.database["clear_users"]
+    await clear_collection.insert_many([{"i": i} for i in range(3)])
+    result = await clear_collection.delete_many({})
+    if not result.acknowledged or result.deleted_count != 3:
+        raise E2EError(f"delete_many failed: {result.raw_result}")
+    remaining = await clear_collection.find({}).to_list(length=100)
+    if remaining:
+        raise E2EError(f"delete_many left documents: {remaining}")
+    print("  delete_many: ok")
+
+
 async def check_persistence(data_dir: Path, server: MonaDBServer) -> None:
     persist_id = "persist-doc-1"
     server.stop()
@@ -169,9 +228,19 @@ async def run_checks(
         await check_find_one_by_inserted_id(collection, inserted_id)
         await check_find_one_explicit_id(collection)
         await check_find_empty_filter(collection)
+        await check_find_one_by_name(collection)
         await check_find_batched_streaming(collection)
         await check_find_limit_with_batch_size(collection)
         await check_kill_cursors(client)
+
+        print("equality updates and deletes")
+        await check_update_one_by_name(collection)
+        await check_delete_one_by_name(collection)
+
+        print("updates and deletes")
+        await check_update_one(collection, inserted_id)
+        await check_delete_one(collection, inserted_id)
+        await check_delete_many(collection)
 
         if data_dir is not None and server is not None:
             persist_collection = db["persist_users"]

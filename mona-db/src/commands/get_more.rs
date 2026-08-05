@@ -70,6 +70,7 @@ impl GetMoreCmd {
             0,
             batch_size,
             state.limit_remaining,
+            state.equality.as_ref(),
         )
         .await?;
 

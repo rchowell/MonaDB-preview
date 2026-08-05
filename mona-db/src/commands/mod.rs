@@ -1,3 +1,4 @@
+pub mod filter;
 pub mod find;
 pub mod get_more;
 pub mod kill_cursors;
@@ -6,7 +7,7 @@ pub mod write;
 use bson::{doc, Document};
 
 use crate::cursor::CursorRegistry;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::storage::CollectionRegistry;
 use crate::wire::{Message, MsgHeader, OpMsg, OpReply, Response, Section, OP_MSG};
 
@@ -84,10 +85,11 @@ pub async fn dispatch_body(
                 }
                 return Ok(Some(write_body(count as i32)));
             }
-            write::WriteCommand::Update(_) | write::WriteCommand::Delete(_) => {
-                return Err(Error::CommandParse(
-                    "update and delete are not supported yet".into(),
-                ));
+            write::WriteCommand::Update(cmd) => {
+                return Ok(Some(cmd.execute(registry).await?));
+            }
+            write::WriteCommand::Delete(cmd) => {
+                return Ok(Some(cmd.execute(registry).await?));
             }
         }
     }
@@ -412,5 +414,110 @@ mod tests {
         )
         .await;
         assert_eq!(err.get_i32("code"), Ok(43));
+    }
+
+    #[tokio::test]
+    async fn dispatches_update_by_id() {
+        let registry = registry();
+        let cursors = cursors();
+        dispatch(
+            1,
+            &doc! {
+                "insert": "users",
+                "$db": "test",
+                "documents": [{ "_id": "alice", "score": 10 }]
+            },
+            crate::wire::ResponseFormat::Msg,
+            &registry,
+            &cursors,
+        )
+        .await
+        .unwrap();
+
+        let body = dispatch_body_doc(
+            &doc! {
+                "update": "users",
+                "$db": "test",
+                "updates": [{
+                    "q": { "_id": "alice" },
+                    "u": { "$set": { "score": 42 } },
+                    "multi": false
+                }]
+            },
+            &registry,
+            &cursors,
+        )
+        .await;
+
+        assert_eq!(body.get_i32("n"), Ok(1));
+        assert_eq!(body.get_i32("nModified"), Ok(1));
+
+        let found = dispatch_body_doc(
+            &doc! {
+                "find": "users",
+                "$db": "test",
+                "filter": { "_id": "alice" }
+            },
+            &registry,
+            &cursors,
+        )
+        .await;
+        let batch = found
+            .get_document("cursor")
+            .unwrap()
+            .get_array("firstBatch")
+            .unwrap();
+        assert_eq!(batch[0].as_document().unwrap().get_i32("score"), Ok(42));
+    }
+
+    #[tokio::test]
+    async fn dispatches_delete_by_id() {
+        let registry = registry();
+        let cursors = cursors();
+        dispatch(
+            1,
+            &doc! {
+                "insert": "users",
+                "$db": "test",
+                "documents": [{ "_id": "alice", "name": "Alice" }]
+            },
+            crate::wire::ResponseFormat::Msg,
+            &registry,
+            &cursors,
+        )
+        .await
+        .unwrap();
+
+        let body = dispatch_body_doc(
+            &doc! {
+                "delete": "users",
+                "$db": "test",
+                "deletes": [{
+                    "q": { "_id": "alice" },
+                    "limit": 1
+                }]
+            },
+            &registry,
+            &cursors,
+        )
+        .await;
+        assert_eq!(body.get_i32("n"), Ok(1));
+
+        let found = dispatch_body_doc(
+            &doc! {
+                "find": "users",
+                "$db": "test",
+                "filter": { "_id": "alice" }
+            },
+            &registry,
+            &cursors,
+        )
+        .await;
+        let batch = found
+            .get_document("cursor")
+            .unwrap()
+            .get_array("firstBatch")
+            .unwrap();
+        assert!(batch.is_empty());
     }
 }

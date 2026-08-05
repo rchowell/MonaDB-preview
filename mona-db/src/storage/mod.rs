@@ -12,7 +12,7 @@ use tokio::sync::RwLock;
 use crate::error::{Error, Result};
 
 pub use id::{encode_id, ensure_id};
-pub use scan::scan_batch;
+pub use scan::{document_matches_equality, scan_batch};
 
 /// Lazily opens one SlateDB `Db` per MongoDB collection (`{data_root}/{db}/{coll}`).
 pub struct CollectionRegistry {
@@ -60,6 +60,13 @@ impl CollectionRegistry {
 
     pub async fn insert(&self, db: &str, coll: &str, mut doc: Document) -> Result<Bson> {
         let id = ensure_id(&mut doc);
+        self.put(db, coll, doc).await?;
+        Ok(id)
+    }
+
+    /// Overwrite (or insert) a document keyed by its `_id`.
+    pub async fn put(&self, db: &str, coll: &str, mut doc: Document) -> Result<Bson> {
+        let id = ensure_id(&mut doc);
         let key = encode_id(&id)?;
         let value = bson::to_vec(&doc)?;
 
@@ -70,6 +77,13 @@ impl CollectionRegistry {
             .map_err(map_slate_error)?;
 
         Ok(id)
+    }
+
+    pub async fn delete(&self, db: &str, coll: &str, id: &Bson) -> Result<()> {
+        let key = encode_id(id)?;
+        let coll_db = self.db_for(db, coll).await?;
+        coll_db.delete(&key).await.map_err(map_slate_error)?;
+        Ok(())
     }
 
     pub async fn get(&self, db: &str, coll: &str, id: &Bson) -> Result<Option<Document>> {
@@ -195,5 +209,35 @@ mod tests {
         let doc = registry2.get("test", "items", &id).await.unwrap().unwrap();
         assert_eq!(doc.get_str("_id"), Ok("item-1"));
         assert_eq!(doc.get_i32("v"), Ok(1));
+    }
+
+    #[tokio::test]
+    async fn put_overwrites_existing_document() {
+        let registry = registry().await;
+        let id = registry
+            .insert("test", "users", doc! { "_id": "alice", "score": 10 })
+            .await
+            .unwrap();
+
+        registry
+            .put("test", "users", doc! { "_id": "alice", "score": 99, "active": true })
+            .await
+            .unwrap();
+
+        let doc = registry.get("test", "users", &id).await.unwrap().unwrap();
+        assert_eq!(doc.get_i32("score"), Ok(99));
+        assert_eq!(doc.get_bool("active"), Ok(true));
+    }
+
+    #[tokio::test]
+    async fn delete_removes_document() {
+        let registry = registry().await;
+        let id = registry
+            .insert("test", "users", doc! { "_id": "alice", "name": "Alice" })
+            .await
+            .unwrap();
+
+        registry.delete("test", "users", &id).await.unwrap();
+        assert!(registry.get("test", "users", &id).await.unwrap().is_none());
     }
 }
