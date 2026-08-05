@@ -2,9 +2,10 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use bson::Document;
 use slatedb::DbSnapshot;
 use tokio::sync::Mutex;
+
+use crate::predicate::Predicate;
 
 /// Default MongoDB-style batch size when `batchSize` is omitted or zero.
 pub const DEFAULT_BATCH_SIZE: i32 = 101;
@@ -18,8 +19,8 @@ pub struct CursorState {
     pub last_key: Option<Vec<u8>>,
     pub limit_remaining: Option<i32>,
     pub default_batch_size: i32,
-    /// Top-level equality filter applied on each batch (`None` = match all).
-    pub equality: Option<Document>,
+    /// Compiled query predicate applied on each batch (`None` = match all).
+    pub predicate: Option<Predicate>,
 }
 
 pub struct CursorRegistry {
@@ -71,6 +72,19 @@ impl CursorRegistry {
             state.limit_remaining = limit_remaining;
         }
     }
+
+    pub async fn len(&self) -> usize {
+        self.cursors.lock().await.len()
+    }
+
+    pub async fn is_empty(&self) -> bool {
+        self.cursors.lock().await.is_empty()
+    }
+
+    /// Drop all cursors (used when evicting a tenant).
+    pub async fn clear(&self) {
+        self.cursors.lock().await.clear();
+    }
 }
 
 impl CursorState {
@@ -81,7 +95,7 @@ impl CursorState {
         last_key: Option<Vec<u8>>,
         limit_remaining: Option<i32>,
         default_batch_size: i32,
-        equality: Option<Document>,
+        predicate: Option<Predicate>,
     ) -> Self {
         let ns = format!("{db}.{collection}");
         Self {
@@ -92,7 +106,7 @@ impl CursorState {
             last_key,
             limit_remaining,
             default_batch_size,
-            equality,
+            predicate,
         }
     }
 }
@@ -108,7 +122,7 @@ impl Clone for CursorState {
             last_key: self.last_key.clone(),
             limit_remaining: self.limit_remaining,
             default_batch_size: self.default_batch_size,
-            equality: self.equality.clone(),
+            predicate: self.predicate.clone(),
         }
     }
 }

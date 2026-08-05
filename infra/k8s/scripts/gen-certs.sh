@@ -13,7 +13,7 @@ fi
 openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
   -keyout "${CERT_DIR}/tls.key" \
   -out "${CERT_DIR}/tls.crt" \
-  -subj "/CN=*.mona.local" \
-  -addext "subjectAltName=DNS:*.mona.local,DNS:mona.local"
+  -subj "/CN=*.mona.localhost" \
+  -addext "subjectAltName=DNS:*.mona.localhost,DNS:mona.localhost"
 
 echo "wrote ${CERT_DIR}/tls.crt and ${CERT_DIR}/tls.key"

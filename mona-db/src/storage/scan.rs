@@ -3,17 +3,8 @@ use std::ops::Bound;
 use bson::Document;
 use slatedb::DbSnapshot;
 
+use crate::predicate::Predicate;
 use crate::error::{Error, Result};
-
-/// Top-level field equality (AND): every key in `equality` must equal the doc field.
-pub fn document_matches_equality(doc: &Document, equality: &Document) -> bool {
-    for (key, expected) in equality.iter() {
-        if doc.get(key) != Some(expected) {
-            return false;
-        }
-    }
-    true
-}
 
 pub struct ScanBatch {
     pub docs: Vec<Document>,
@@ -24,7 +15,7 @@ pub struct ScanBatch {
 
 /// Read up to `batch_size` matching documents from a snapshot, resuming after `after_key`.
 /// Applies `skip` only when `after_key` is `None` (first batch).
-/// When `equality` is set, only matching docs count toward skip/batch/limit; `last_key`
+/// When `predicate` is set, only matching docs count toward skip/batch/limit; `last_key`
 /// still advances through non-matching keys.
 pub async fn scan_batch(
     snapshot: &DbSnapshot,
@@ -32,7 +23,7 @@ pub async fn scan_batch(
     skip: i32,
     batch_size: i32,
     limit_remaining: Option<i32>,
-    equality: Option<&Document>,
+    predicate: Option<&Predicate>,
 ) -> Result<ScanBatch> {
     let batch_cap = batch_size.max(0) as usize;
     if batch_cap == 0 {
@@ -80,8 +71,8 @@ pub async fn scan_batch(
         last_key = Some(kv.key.to_vec());
 
         let doc = bson::from_slice(kv.value.as_ref())?;
-        if let Some(eq) = equality {
-            if !document_matches_equality(&doc, eq) {
+        if let Some(pred) = predicate {
+            if !pred.matches(&doc) {
                 continue;
             }
         }

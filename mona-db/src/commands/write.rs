@@ -607,20 +607,53 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_dollar_operator_query() {
+    async fn rejects_unsupported_field_operator_query() {
         let registry = registry();
         let cmd = UpdateCmd::from_document(doc! {
             "update": "users",
             "$db": "test",
             "updates": [{
-                "q": { "$gt": { "score": 5 } },
+                "q": { "score": { "$mod": [2, 0] } },
                 "u": { "$set": { "active": true } }
             }]
         })
         .unwrap();
 
         let err = cmd.execute(&registry).await.unwrap_err();
-        assert!(err.to_string().contains("unsupported query operator"));
+        assert!(err.to_string().contains("unsupported field operator"));
+    }
+
+    #[tokio::test]
+    async fn update_by_gt_operator() {
+        let registry = registry();
+        registry
+            .insert("test", "users", doc! { "_id": "a", "score": 10 })
+            .await
+            .unwrap();
+        registry
+            .insert("test", "users", doc! { "_id": "b", "score": 30 })
+            .await
+            .unwrap();
+
+        let cmd = UpdateCmd::from_document(doc! {
+            "update": "users",
+            "$db": "test",
+            "updates": [{
+                "q": { "score": { "$gt": 20 } },
+                "u": { "$set": { "high": true } },
+                "multi": true
+            }]
+        })
+        .unwrap();
+
+        let body = cmd.execute(&registry).await.unwrap();
+        assert_eq!(body.get_i32("n"), Ok(1));
+        let doc = registry
+            .get("test", "users", &Bson::String("b".into()))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(doc.get_bool("high"), Ok(true));
     }
 
     #[tokio::test]

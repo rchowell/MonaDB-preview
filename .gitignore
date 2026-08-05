@@ -11,6 +11,10 @@ mona-api/.venv/
 **/tsp-output/
 # Keep mona-types/generated committed for consumers; rebuild via npm run build
 mona-api/.env
+mona-edge/.env
+mona-gateway/.env
+gateway-data/
+monadb-data/
 infra/k8s/certs/*.pem
 infra/k8s/certs/*.key
 infra/k8s/certs/*.crt

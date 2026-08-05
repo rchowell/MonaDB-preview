@@ -14,20 +14,37 @@ spec:
         app: mona-edge
     spec:
       containers:
-        - name: edge
+        - name: mona-edge
           image: mona-edge:local
           imagePullPolicy: IfNotPresent
           ports:
-            - containerPort: 27017
+            - name: mongodb-tls
+              containerPort: 27017
+            - name: health
+              containerPort: 8080
           env:
             - name: CONTROL_PLANE_URL
               value: http://mona-api.mona.svc.cluster.local:8000
             - name: EDGE_LISTEN
               value: "0.0.0.0:27017"
+            - name: HEALTH_LISTEN
+              value: "0.0.0.0:8080"
             - name: TLS_CERT
               value: /certs/tls.crt
             - name: TLS_KEY
               value: /certs/tls.key
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 1
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
           volumeMounts:
             - name: certs
               mountPath: /certs

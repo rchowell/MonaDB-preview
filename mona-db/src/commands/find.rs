@@ -3,9 +3,9 @@ use bson::{Bson, Document};
 use crate::commands::filter::QueryFilter;
 use crate::cursor::{CursorRegistry, CursorState, DEFAULT_BATCH_SIZE};
 use crate::error::{Error, Result};
-use crate::storage::{document_matches_equality, scan_batch, CollectionRegistry};
+use crate::storage::{scan_batch, CollectionRegistry};
 
-/// Parsed `find` command with empty, `_id`, or top-level equality filter.
+/// Parsed `find` command with equality and supported `$` operators.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FindCmd {
     pub db: String,
@@ -61,11 +61,11 @@ impl FindCmd {
                 let first_batch: Vec<Bson> = docs.into_iter().map(Bson::Document).collect();
                 Ok(cursor_reply(ns, 0, first_batch, true))
             }
-            QueryFilter::Equality(eq) if eq.get("_id").is_some() => {
-                let id = eq.get("_id").expect("_id present");
+            QueryFilter::Expr(pred) if pred.extract_id_eq().is_some() => {
+                let id = pred.extract_id_eq().expect("_id present");
                 let mut docs = Vec::new();
                 if let Some(doc) = registry.get(&self.db, &self.collection, id).await? {
-                    if document_matches_equality(&doc, eq) {
+                    if pred.matches(&doc) {
                         docs.push(doc);
                     }
                 }
@@ -75,8 +75,8 @@ impl FindCmd {
                 let first_batch: Vec<Bson> = docs.into_iter().map(Bson::Document).collect();
                 Ok(cursor_reply(ns, 0, first_batch, true))
             }
-            QueryFilter::All | QueryFilter::Equality(_) => {
-                let equality = self.filter.equality_doc().cloned();
+            QueryFilter::All | QueryFilter::Expr(_) => {
+                let predicate = self.filter.predicate().cloned();
                 let snapshot = registry.snapshot(&self.db, &self.collection).await?;
                 let batch = scan_batch(
                     &snapshot,
@@ -84,7 +84,7 @@ impl FindCmd {
                     self.skip,
                     self.batch_size,
                     self.limit,
-                    equality.as_ref(),
+                    predicate.as_ref(),
                 )
                 .await?;
 
@@ -102,7 +102,7 @@ impl FindCmd {
                         batch.last_key,
                         batch.limit_remaining,
                         self.batch_size,
-                        equality,
+                        predicate,
                     ))
                     .await;
 
@@ -231,10 +231,19 @@ mod tests {
         })
         .unwrap();
 
-        assert_eq!(
-            cmd.filter,
-            QueryFilter::Equality(doc! { "name": "alice" })
-        );
+        assert!(matches!(cmd.filter, QueryFilter::Expr(_)));
+    }
+
+    #[test]
+    fn parses_comparison_filter() {
+        let cmd = FindCmd::from_document(doc! {
+            "find": "users",
+            "$db": "test",
+            "filter": { "score": { "$gt": 10 } }
+        })
+        .unwrap();
+
+        assert!(matches!(cmd.filter, QueryFilter::Expr(_)));
     }
 
     #[test]
@@ -253,14 +262,14 @@ mod tests {
     }
 
     #[test]
-    fn rejects_dollar_operator_filter() {
+    fn rejects_unsupported_operator_filter() {
         let err = FindCmd::from_document(doc! {
             "find": "users",
             "$db": "test",
-            "filter": { "$gt": { "score": 5 } }
+            "filter": { "score": { "$mod": [2, 0] } }
         })
         .unwrap_err();
-        assert!(err.to_string().contains("unsupported query operator"));
+        assert!(err.to_string().contains("unsupported field operator"));
     }
 
     #[tokio::test]
@@ -294,5 +303,51 @@ mod tests {
             batch[0].as_document().unwrap().get_str("name"),
             Ok("bob")
         );
+    }
+
+    #[tokio::test]
+    async fn find_by_gt_and_or() {
+        let registry = CollectionRegistry::new(Arc::new(InMemory::new()), "find-op-test");
+        let cursors = CursorRegistry::new();
+        for (id, name, score) in [
+            ("a", "alice", 10),
+            ("b", "bob", 20),
+            ("c", "carol", 30),
+        ] {
+            registry
+                .insert(
+                    "test",
+                    "users",
+                    doc! { "_id": id, "name": name, "score": score },
+                )
+                .await
+                .unwrap();
+        }
+
+        let cmd = FindCmd::from_document(doc! {
+            "find": "users",
+            "$db": "test",
+            "filter": {
+                "$or": [
+                    { "score": { "$gt": 25 } },
+                    { "name": "alice" }
+                ]
+            }
+        })
+        .unwrap();
+
+        let body = cmd.execute(&registry, &cursors).await.unwrap();
+        let batch = body
+            .get_document("cursor")
+            .unwrap()
+            .get_array("firstBatch")
+            .unwrap();
+        let names: Vec<&str> = batch
+            .iter()
+            .map(|b| b.as_document().unwrap().get_str("name").unwrap())
+            .collect();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"alice"));
+        assert!(names.contains(&"carol"));
     }
 }

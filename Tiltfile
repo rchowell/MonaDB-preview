@@ -1,4 +1,4 @@
-# MonaDB local full stack (kind + control plane + edge + Next.js console)
+# MonaDB local full stack (kind + control plane + gateway + edge + Next.js console)
 # Usage: tilt up
 
 CLUSTER_NAME = 'mona'
@@ -26,21 +26,17 @@ def ensure_kind_cluster():
         print('Creating kind cluster %s...' % CLUSTER_NAME)
         local(['kind', 'create', 'cluster', '--config', '%s/kind.yaml' % K8S])
 
+    # kind create writes kubeconfig, but an existing cluster may have been created
+    # without this machine's kubeconfig (or it was overwritten). Always re-export
+    # so Tilt talks to kind-mona — not docker-desktop — where host ports map.
+    local(['kind', 'export', 'kubeconfig', '--name', CLUSTER_NAME], quiet=True)
     local(['kubectl', 'config', 'use-context', CONTEXT], quiet=True)
     local(['kubectl', 'cluster-info', '--context', CONTEXT], quiet=True)
 
 
-def sync_api_templates():
-    # mona-api image expects templates/ in its build context (same as up.sh).
-    local('rm -rf mona-api/templates && cp -R %s/templates mona-api/templates' % K8S)
-    for name in ['deployment.yaml', 'pvc.yaml', 'service.yaml']:
-        watch_file('%s/templates/%s' % (K8S, name))
-
-
 ensure_kind_cluster()
-sync_api_templates()
 
-# TLS for the edge SNI proxy (*.mona.local)
+# TLS for the edge SNI proxy (*.mona.localhost)
 local(['bash', '%s/scripts/gen-certs.sh' % K8S])
 watch_file('%s/certs/tls.crt' % K8S)
 watch_file('%s/certs/tls.key' % K8S)
@@ -59,26 +55,29 @@ k8s_yaml([
     '%s/base/rbac.yaml' % K8S,
     '%s/base/postgres.yaml' % K8S,
     '%s/base/mona-api.yaml' % K8S,
-    '%s/base/edge.yaml' % K8S,
+    '%s/base/mona-gateway.yaml' % K8S,
+    '%s/base/mona-edge.yaml' % K8S,
 ])
-
-# Engine image is spawned by mona-api (MONADB_IMAGE), not a static Deployment.
-docker_build(
-    'mona-db:local',
-    'mona-db',
-    match_in_env_vars=True,
-    ignore=['docs', 'scripts', 'target', '.git'],
-)
 
 docker_build(
     'mona-api:local',
     'mona-api',
-    ignore=['.venv', '**/__pycache__', '**/*.pyc', '.git'],
+    ignore=['target', '.git', 'templates'],
+)
+
+# Gateway links monadb as a path dependency; build from repo root.
+docker_build(
+    'mona-gateway:local',
+    '.',
+    dockerfile='mona-gateway/Dockerfile',
+    only=['mona-db', 'mona-gateway'],
+    ignore=['**/target', 'mona-db/docs', 'mona-db/scripts', '**/.git'],
 )
 
 docker_build(
     'mona-edge:local',
-    '%s/edge' % K8S,
+    'mona-edge',
+    ignore=['target', '.git'],
 )
 
 # Host ports come from kind.yaml NodePort mappings (8000, 27017).
@@ -95,16 +94,22 @@ k8s_resource(
 )
 
 k8s_resource(
-    'mona-edge',
+    'mona-gateway',
     resource_deps=['mona-api'],
+    labels=['gateway'],
+)
+
+k8s_resource(
+    'mona-edge',
+    resource_deps=['mona-gateway'],
     labels=['edge'],
 )
 
 local_resource(
     'mona-app',
-    cmd='npm install',
+    cmd='pnpm install',
     dir='mona-app',
-    serve_cmd='npm run dev',
+    serve_cmd='pnpm run dev',
     serve_dir='mona-app',
     serve_env={
         'NEXT_PUBLIC_MONA_API_URL': 'http://localhost:8000',

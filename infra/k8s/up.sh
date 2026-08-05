@@ -18,7 +18,7 @@ need kubectl
 need docker
 need openssl
 
-echo "==> generating TLS certs for *.mona.local"
+echo "==> generating TLS certs for *.mona.localhost"
 bash "${K8S}/scripts/gen-certs.sh"
 
 if ! kind get clusters 2>/dev/null | grep -qx "${CLUSTER_NAME}"; then
@@ -26,21 +26,18 @@ if ! kind get clusters 2>/dev/null | grep -qx "${CLUSTER_NAME}"; then
   kind create cluster --config "${K8S}/kind.yaml"
 else
   echo "==> kind cluster ${CLUSTER_NAME} already exists"
+  kind export kubeconfig --name "${CLUSTER_NAME}"
   kubectl cluster-info --context "kind-${CLUSTER_NAME}" >/dev/null
 fi
 
-echo "==> syncing deployment templates into mona-api image context"
-rm -rf "${ROOT}/mona-api/templates"
-cp -R "${K8S}/templates" "${ROOT}/mona-api/templates"
-
 echo "==> building images"
-docker build -t mona-db:local "${ROOT}/mona-db"
 docker build -t mona-api:local "${ROOT}/mona-api"
-docker build -t mona-edge:local "${K8S}/edge"
+docker build -f "${ROOT}/mona-gateway/Dockerfile" -t mona-gateway:local "${ROOT}"
+docker build -t mona-edge:local "${ROOT}/mona-edge"
 
 echo "==> loading images into kind"
-kind load docker-image mona-db:local --name "${CLUSTER_NAME}"
 kind load docker-image mona-api:local --name "${CLUSTER_NAME}"
+kind load docker-image mona-gateway:local --name "${CLUSTER_NAME}"
 kind load docker-image mona-edge:local --name "${CLUSTER_NAME}"
 
 echo "==> applying base manifests"
@@ -55,11 +52,13 @@ kubectl -n mona create secret tls mona-edge-tls \
   --dry-run=client -o yaml | kubectl apply -f -
 
 kubectl apply -f "${K8S}/base/mona-api.yaml"
-kubectl apply -f "${K8S}/base/edge.yaml"
+kubectl apply -f "${K8S}/base/mona-gateway.yaml"
+kubectl apply -f "${K8S}/base/mona-edge.yaml"
 
-echo "==> waiting for control plane"
+echo "==> waiting for control plane + gateway"
 kubectl -n mona rollout status deployment/postgres --timeout=180s
 kubectl -n mona rollout status deployment/mona-api --timeout=180s
+kubectl -n mona rollout status deployment/mona-gateway --timeout=180s
 kubectl -n mona rollout status deployment/mona-edge --timeout=180s
 
 cat <<EOF
@@ -67,13 +66,11 @@ cat <<EOF
 MonaDB local cluster is ready.
 
   Control plane:  http://localhost:8000
-  Mongo edge:     mongodb://db-<id>.mona.local:27017/?tls=true&tlsAllowInvalidCertificates=true
+  Mongo edge:     mongodb://db-<id>.mona.localhost:27017/?tls=true&tlsAllowInvalidCertificates=true
 
-Add a hosts entry so *.mona.local resolves to 127.0.0.1, for example:
+Names under .localhost often resolve to loopback automatically. If not, add:
 
-  echo '127.0.0.1 db-example.mona.local' | sudo tee -a /etc/hosts
-
-Or use a resolver that maps *.mona.local -> 127.0.0.1.
+  echo '127.0.0.1 db-example.mona.localhost' | sudo tee -a /etc/hosts
 
 Start the app:
 

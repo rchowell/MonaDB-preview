@@ -1,44 +1,34 @@
 use bson::{Bson, Document};
 
-use crate::error::{Error, Result};
-use crate::storage::{document_matches_equality, CollectionRegistry};
+use crate::predicate::Predicate;
+use crate::error::Result;
+use crate::storage::CollectionRegistry;
 
-/// Supported write/find query shapes: empty, sole `_id`, or top-level equality AND.
+/// Supported write/find query shapes with optional `_id` point-get fast path.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum QueryFilter {
     All,
     ById(Bson),
-    Equality(Document),
+    Expr(Predicate),
 }
 
 impl QueryFilter {
     pub(crate) fn from_query(query: &Document) -> Result<Self> {
-        if query.is_empty() {
+        let pred = Predicate::parse(query)?;
+        if matches!(pred, Predicate::Always) {
             return Ok(Self::All);
         }
-
-        for key in query.keys() {
-            if key.starts_with('$') {
-                return Err(Error::CommandParse(format!(
-                    "unsupported query operator: '{key}' (only top-level equality is supported)"
-                )));
-            }
+        if let Some(id) = pred.as_id_eq() {
+            return Ok(Self::ById(id.clone()));
         }
-
-        if query.len() == 1 {
-            if let Some(id) = query.get("_id") {
-                return Ok(Self::ById(id.clone()));
-            }
-        }
-
-        Ok(Self::Equality(query.clone()))
+        Ok(Self::Expr(pred))
     }
 
-    /// Equality predicate document for scan filtering (`None` means match all).
-    pub(crate) fn equality_doc(&self) -> Option<&Document> {
+    /// Predicate applied during scans (`None` means match all).
+    pub(crate) fn predicate(&self) -> Option<&Predicate> {
         match self {
             Self::All | Self::ById(_) => None,
-            Self::Equality(doc) => Some(doc),
+            Self::Expr(pred) => Some(pred),
         }
     }
 
@@ -46,7 +36,7 @@ impl QueryFilter {
         match self {
             Self::All => true,
             Self::ById(id) => doc.get("_id") == Some(id),
-            Self::Equality(eq) => document_matches_equality(doc, eq),
+            Self::Expr(pred) => pred.matches(doc),
         }
     }
 
@@ -67,8 +57,8 @@ impl QueryFilter {
                 Some(doc) => Ok(vec![doc]),
                 None => Ok(Vec::new()),
             },
-            Self::Equality(eq) => {
-                if let Some(id) = eq.get("_id") {
+            Self::Expr(_) => {
+                if let Some(id) = self.predicate().and_then(|p| p.extract_id_eq()) {
                     let Some(doc) = registry.get(db, coll, id).await? else {
                         return Ok(Vec::new());
                     };
@@ -113,20 +103,17 @@ mod tests {
             QueryFilter::from_query(&doc! { "_id": "alice" }).unwrap(),
             QueryFilter::ById(Bson::String("alice".into()))
         );
-        assert_eq!(
+        assert!(matches!(
             QueryFilter::from_query(&doc! { "name": "alice" }).unwrap(),
-            QueryFilter::Equality(doc! { "name": "alice" })
-        );
-        assert_eq!(
-            QueryFilter::from_query(&doc! { "name": "alice", "score": 10 }).unwrap(),
-            QueryFilter::Equality(doc! { "name": "alice", "score": 10 })
-        );
+            QueryFilter::Expr(_)
+        ));
     }
 
     #[test]
-    fn rejects_dollar_operators() {
-        let err = QueryFilter::from_query(&doc! { "$gt": { "score": 5 } }).unwrap_err();
-        assert!(err.to_string().contains("unsupported query operator"));
+    fn parses_comparison_operators() {
+        let filter = QueryFilter::from_query(&doc! { "score": { "$gt": 10 } }).unwrap();
+        assert!(filter.matches(&doc! { "score": 11 }));
+        assert!(!filter.matches(&doc! { "score": 10 }));
     }
 
     #[test]

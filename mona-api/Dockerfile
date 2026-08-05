@@ -15,12 +15,10 @@ RUN apt-get update \
     && useradd --system --create-home --uid 10001 monaapi
 
 COPY --from=builder /src/target/release/mona-api /usr/local/bin/mona-api
-COPY templates /app/templates
 
 USER monaapi
 WORKDIR /app
-ENV TEMPLATES_DIR=/app/templates \
-    LISTEN_ADDR=0.0.0.0:8000
+ENV LISTEN_ADDR=0.0.0.0:8000
 
 EXPOSE 8000
 CMD ["mona-api"]

@@ -3,16 +3,18 @@ mod scan;
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use bson::{Bson, Document};
-use slatedb::{Db, DbSnapshot, Error as SlateDbError};
 use slatedb::object_store::ObjectStore;
+use slatedb::{Db, DbSnapshot, Error as SlateDbError};
 use tokio::sync::RwLock;
+use tracing::{debug, info, Instrument};
 
 use crate::error::{Error, Result};
 
 pub use id::{encode_id, ensure_id};
-pub use scan::{document_matches_equality, scan_batch};
+pub use scan::scan_batch;
 
 /// Lazily opens one SlateDB `Db` per MongoDB collection (`{data_root}/{db}/{coll}`).
 pub struct CollectionRegistry {
@@ -30,31 +32,79 @@ impl CollectionRegistry {
         }
     }
 
+    pub fn data_root(&self) -> &str {
+        &self.data_root
+    }
+
+    pub async fn open_count(&self) -> usize {
+        self.open.read().await.len()
+    }
+
     fn collection_path(&self, db: &str, coll: &str) -> String {
         format!("{}/{}/{}", self.data_root, db, coll)
     }
 
     async fn db_for(&self, db: &str, coll: &str) -> Result<Arc<Db>> {
+        let started = Instant::now();
         let key = (db.to_string(), coll.to_string());
         {
             let open = self.open.read().await;
             if let Some(db_handle) = open.get(&key) {
+                debug!(
+                    db,
+                    coll,
+                    warm = true,
+                    elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+                    "slatedb handle lookup"
+                );
                 return Ok(db_handle.clone());
             }
         }
 
+        // Hold the write lock across open to prevent double-open races.
+        let mut open = self.open.write().await;
+        if let Some(db_handle) = open.get(&key) {
+            debug!(
+                db,
+                coll,
+                warm = true,
+                raced = true,
+                elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+                "slatedb handle lookup"
+            );
+            return Ok(db_handle.clone());
+        }
+
         let path = self.collection_path(db, coll);
-        let db_handle = Db::builder(path, self.object_store.clone())
-            .build()
-            .await
-            .map_err(map_slate_error)?;
+        let open_started = Instant::now();
+        let span = tracing::info_span!(
+            "slatedb.open",
+            db,
+            coll,
+            path = %path,
+            cold = true,
+        );
+        let db_handle = async {
+            Db::builder(path.clone(), self.object_store.clone())
+                .build()
+                .await
+                .map_err(map_slate_error)
+        }
+        .instrument(span)
+        .await?;
+        let open_ms = open_started.elapsed().as_secs_f64() * 1000.0;
         let db_handle = Arc::new(db_handle);
-
-        self.open
-            .write()
-            .await
-            .insert(key, db_handle.clone());
-
+        open.insert(key, db_handle.clone());
+        info!(
+            db,
+            coll,
+            path = %path,
+            cold = true,
+            open_ms,
+            total_ms = started.elapsed().as_secs_f64() * 1000.0,
+            open_collections = open.len(),
+            "slatedb cold open"
+        );
         Ok(db_handle)
     }
 
@@ -120,6 +170,39 @@ impl CollectionRegistry {
         }
 
         Ok(docs)
+    }
+
+    /// Flush and close all open SlateDB handles (for tenant eviction).
+    pub async fn close_all(&self) -> Result<()> {
+        let started = Instant::now();
+        let mut open = self.open.write().await;
+        let handles: Vec<((String, String), Arc<Db>)> = open.drain().collect();
+        drop(open);
+
+        let collection_count = handles.len();
+        for ((db, coll), handle) in handles {
+            let close_started = Instant::now();
+            if let Err(err) = handle.flush().await {
+                return Err(map_slate_error(err));
+            }
+            if let Err(err) = handle.close().await {
+                return Err(map_slate_error(err));
+            }
+            debug!(
+                db = %db,
+                coll = %coll,
+                close_ms = close_started.elapsed().as_secs_f64() * 1000.0,
+                "slatedb closed"
+            );
+        }
+        if collection_count > 0 {
+            info!(
+                collections = collection_count,
+                total_ms = started.elapsed().as_secs_f64() * 1000.0,
+                "slatedb close_all"
+            );
+        }
+        Ok(())
     }
 }
 
@@ -204,7 +287,9 @@ mod tests {
             .await
             .unwrap();
 
-        // Simulate restart: new registry on same object store + root.
+        // Flush/close so a fresh registry can reopen the same path.
+        registry.close_all().await.unwrap();
+
         let registry2 = CollectionRegistry::new(store, root);
         let doc = registry2.get("test", "items", &id).await.unwrap().unwrap();
         assert_eq!(doc.get_str("_id"), Ok("item-1"));

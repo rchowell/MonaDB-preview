@@ -22,15 +22,15 @@ spec:
             - containerPort: 8000
           env:
             - name: DATABASE_URL
-              value: postgresql+asyncpg://mona:mona@postgres:5432/mona
+              value: postgres://mona:mona@postgres:5432/mona
             - name: EDGE_DOMAIN
-              value: mona.local
-            - name: MONADB_IMAGE
-              value: mona-db:local
+              value: mona.localhost
+            - name: GATEWAY_SERVICE_HOST
+              value: mona-gateway.mona.svc.cluster.local
+            - name: GATEWAY_SERVICE_PORT
+              value: "27017"
             - name: K8S_NAMESPACE
               value: mona
-            - name: TEMPLATES_DIR
-              value: /app/templates
             - name: IDLE_TIMEOUT_SECONDS
               value: "300"
           readinessProbe:

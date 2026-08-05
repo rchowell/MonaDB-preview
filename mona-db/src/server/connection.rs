@@ -11,24 +11,19 @@ use crate::wire::{take_frame, Message};
 
 const READ_BUFFER_SIZE: usize = 8192;
 
-pub async fn handle_connection(mut stream: TcpStream, state: Arc<AppState>) -> Result<()> {
-    let mut read_buf = BytesMut::with_capacity(READ_BUFFER_SIZE);
+pub async fn handle_connection(stream: TcpStream, state: Arc<AppState>) -> Result<()> {
+    handle_connection_with_buf(stream, state, BytesMut::new()).await
+}
+
+/// Handle a MongoDB connection, optionally starting with bytes already read (e.g. after preamble).
+pub async fn handle_connection_with_buf(
+    mut stream: TcpStream,
+    state: Arc<AppState>,
+    mut read_buf: BytesMut,
+) -> Result<()> {
     let mut scratch = vec![0u8; READ_BUFFER_SIZE];
 
     loop {
-        let bytes_read = stream.read(&mut scratch).await?;
-        if bytes_read == 0 {
-            if read_buf.is_empty() {
-                return Ok(());
-            }
-            return Err(crate::error::Error::Incomplete {
-                needed: 4,
-                available: read_buf.len(),
-            });
-        }
-
-        read_buf.extend_from_slice(&scratch[..bytes_read]);
-
         while let Some(frame) = take_frame(&mut read_buf)? {
             let message = Message::decode(frame)?;
             let request_id = message.request_id();
@@ -55,6 +50,19 @@ pub async fn handle_connection(mut stream: TcpStream, state: Arc<AppState>) -> R
                 }
             }
         }
+
+        let bytes_read = stream.read(&mut scratch).await?;
+        if bytes_read == 0 {
+            if read_buf.is_empty() {
+                return Ok(());
+            }
+            return Err(crate::error::Error::Incomplete {
+                needed: 4,
+                available: read_buf.len(),
+            });
+        }
+
+        read_buf.extend_from_slice(&scratch[..bytes_read]);
     }
 }
 

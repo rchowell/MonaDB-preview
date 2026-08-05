@@ -1,7 +1,8 @@
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use serde::Serialize;
+
+use crate::models::ErrorBody;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
@@ -11,11 +12,6 @@ pub enum AppError {
     BadRequest(String),
     #[error("{0}")]
     Internal(String),
-}
-
-#[derive(Serialize)]
-struct ErrorBody {
-    detail: String,
 }
 
 impl IntoResponse for AppError {

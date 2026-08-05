@@ -4,7 +4,8 @@ use sqlx::PgPool;
 
 use crate::config::Config;
 use crate::error::AppError;
-use crate::models::{DatabaseRow, DatabaseStatus};
+use crate::models::DatabaseStatus;
+use crate::row::DatabaseRow;
 
 pub async fn connect(config: &Config) -> Result<PgPool, sqlx::Error> {
     let pool = PgPoolOptions::new()
@@ -63,6 +64,33 @@ pub async fn insert_database(
     .bind(now)
     .fetch_one(pool)
     .await
+}
+
+pub async fn update_database_name(
+    pool: &PgPool,
+    id: &str,
+    name: &str,
+) -> Result<Option<DatabaseRow>, sqlx::Error> {
+    sqlx::query_as::<_, DatabaseRow>(
+        r#"
+        UPDATE databases
+        SET name = $2
+        WHERE id = $1
+        RETURNING id, name, status, k8s_name, last_active_at, created_at
+        "#,
+    )
+    .bind(id)
+    .bind(name)
+    .fetch_optional(pool)
+    .await
+}
+
+pub async fn delete_database(pool: &PgPool, id: &str) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM databases WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 pub async fn update_status(

@@ -17,6 +17,30 @@ class E2EError(Exception):
     """Raised when an end-to-end check fails."""
 
 
+E2E_DB = "monadb_e2e"
+
+# All collections touched by this suite. Cleared at the start of every run so
+# checks are idempotent against a persistent server / reused data dir.
+E2E_COLLECTIONS = (
+    "users",
+    "batch_users_stream",
+    "limit_users_stream",
+    "kill_users_stream",
+    "clear_users",
+    "ops_users",
+    "persist_users",
+)
+
+
+async def reset_collection(collection) -> None:
+    await collection.delete_many({})
+
+
+async def reset_e2e_database(db) -> None:
+    for name in E2E_COLLECTIONS:
+        await reset_collection(db[name])
+
+
 async def check_handshake(client: AsyncIOMotorClient) -> None:
     hello = await client.admin.command("hello")
     if hello.get("ok") != 1:
@@ -64,8 +88,8 @@ async def check_find_one_by_inserted_id(collection, inserted_id: Any) -> None:
 
 async def check_find_empty_filter(collection) -> None:
     docs = await collection.find({}).to_list(length=100)
-    names = {doc.get("name") for doc in docs}
-    if names != {"alice", "bob", "carol", "Explicit Alice"}:
+    names = sorted(doc.get("name") for doc in docs)
+    if names != ["Explicit Alice", "alice", "bob", "carol"]:
         raise E2EError(f"find with empty filter returned unexpected docs: {docs}")
     print(f"  find empty filter: ok (count={len(docs)})")
 
@@ -93,7 +117,7 @@ async def check_find_limit_with_batch_size(collection) -> None:
 
 
 async def check_kill_cursors(client: AsyncIOMotorClient) -> None:
-    collection = client["monadb_e2e"]["kill_users_stream"]
+    collection = client[E2E_DB]["kill_users_stream"]
     await collection.insert_many([{"i": i} for i in range(5)])
 
     cursor = collection.find({}).batch_size(2)
@@ -105,7 +129,7 @@ async def check_kill_cursors(client: AsyncIOMotorClient) -> None:
     if cursor_id is None:
         raise E2EError("expected open cursor id after first batch")
 
-    result = await client["monadb_e2e"].command(
+    result = await client[E2E_DB].command(
         {
             "killCursors": "kill_users_stream",
             "cursors": [cursor_id],
@@ -186,6 +210,65 @@ async def check_delete_many(collection) -> None:
     print("  delete_many: ok")
 
 
+async def check_query_operators(collection) -> None:
+    ops = collection.database["ops_users"]
+    await ops.insert_many(
+        [
+            {"name": "ann", "score": 10, "tag": "a"},
+            {"name": "ben", "score": 25},
+            {"name": "cy", "score": 40, "tag": "c"},
+        ]
+    )
+
+    gt_docs = await ops.find({"score": {"$gt": 20}}).to_list(length=100)
+    gt_names = sorted(doc["name"] for doc in gt_docs)
+    if gt_names != ["ben", "cy"]:
+        raise E2EError(f"$gt find returned unexpected docs: {gt_docs}")
+    print("  find $gt: ok")
+
+    in_docs = await ops.find({"name": {"$in": ["ann", "cy"]}}).to_list(length=100)
+    in_names = sorted(doc["name"] for doc in in_docs)
+    if in_names != ["ann", "cy"]:
+        raise E2EError(f"$in find returned unexpected docs: {in_docs}")
+    print("  find $in: ok")
+
+    exists_docs = await ops.find({"tag": {"$exists": False}}).to_list(length=100)
+    if len(exists_docs) != 1 or exists_docs[0].get("name") != "ben":
+        raise E2EError(f"$exists find returned unexpected docs: {exists_docs}")
+    print("  find $exists: ok")
+
+    or_docs = await ops.find(
+        {"$or": [{"name": "ann"}, {"score": {"$gte": 40}}]}
+    ).to_list(length=100)
+    or_names = sorted(doc["name"] for doc in or_docs)
+    if or_names != ["ann", "cy"]:
+        raise E2EError(f"$or find returned unexpected docs: {or_docs}")
+    print("  find $or: ok")
+
+    not_docs = await ops.find({"score": {"$not": {"$lt": 25}}}).to_list(length=100)
+    not_names = sorted(doc["name"] for doc in not_docs)
+    if not_names != ["ben", "cy"]:
+        raise E2EError(f"$not find returned unexpected docs: {not_docs}")
+    print("  find $not: ok")
+
+    result = await ops.update_many({"score": {"$lt": 30}}, {"$set": {"league": "low"}})
+    if not result.acknowledged or result.matched_count != 2 or result.modified_count != 2:
+        raise E2EError(f"update_many $lt failed: {result.raw_result}")
+    low = await ops.find({"league": "low"}).to_list(length=100)
+    if sorted(doc["name"] for doc in low) != ["ann", "ben"]:
+        raise E2EError(f"update_many $lt unexpected result: {low}")
+    print("  update_many $lt: ok")
+
+    deleted = await ops.delete_many({"$and": [{"score": {"$gt": 20}}, {"tag": {"$exists": True}}]})
+    if not deleted.acknowledged or deleted.deleted_count != 1:
+        raise E2EError(f"delete_many $and failed: {deleted.raw_result}")
+    remaining = await ops.find({}).to_list(length=100)
+    remaining_names = sorted(doc["name"] for doc in remaining)
+    if remaining_names != ["ann", "ben"]:
+        raise E2EError(f"delete_many $and left unexpected docs: {remaining}")
+    print("  delete_many $and: ok")
+
+
 async def check_persistence(data_dir: Path, server: MonaDBServer) -> None:
     persist_id = "persist-doc-1"
     server.stop()
@@ -194,7 +277,7 @@ async def check_persistence(data_dir: Path, server: MonaDBServer) -> None:
     try:
         client = AsyncIOMotorClient(restart.uri, serverSelectionTimeoutMS=5000)
         try:
-            collection = client["monadb_e2e"]["persist_users"]
+            collection = client[E2E_DB]["persist_users"]
             doc = await collection.find_one({"_id": persist_id})
             if doc is None or doc.get("v") != 42:
                 raise E2EError(f"post-restart find failed: {doc}")
@@ -217,7 +300,11 @@ async def run_checks(
         await check_handshake(client)
         await check_ping(client)
 
-        db = client["monadb_e2e"]
+        db = client[E2E_DB]
+        print("reset")
+        await reset_e2e_database(db)
+        print("  cleared e2e collections")
+
         collection = db["users"]
 
         print("writes")
@@ -236,6 +323,9 @@ async def run_checks(
         print("equality updates and deletes")
         await check_update_one_by_name(collection)
         await check_delete_one_by_name(collection)
+
+        print("query operators")
+        await check_query_operators(collection)
 
         print("updates and deletes")
         await check_update_one(collection, inserted_id)

@@ -2,25 +2,27 @@
 
 Serverless MongoDB-compatible database. This repo contains:
 
-| Package                     | Role                                                            |
-| --------------------------- | --------------------------------------------------------------- |
-| [`mona-db`](mona-db/)       | Rust MongoDB wire-protocol engine (SlateDB)                     |
-| [`mona-api`](mona-api/)     | FastAPI control plane (Postgres 18 metadata + K8s provisioning) |
-| [`mona-app`](mona-app/)     | Next.js console (Tailwind + [Base UI](https://base-ui.com/))    |
-| [`mona-types`](mona-types/) | TypeSpec source of truth for the control-plane API              |
-| [`infra/k8s`](infra/k8s/)   | Local kind cluster, edge TLS/SNI proxy, manifests               |
+| Package                         | Role                                                                  |
+| ------------------------------- | --------------------------------------------------------------------- |
+| [`mona-db`](mona-db/)           | Rust MongoDB wire-protocol engine library (SlateDB)                   |
+| [`mona-gateway`](mona-gateway/) | Shared multi-tenant gateway (Axum health + Mongo TCP + SlateDB LRU)   |
+| [`mona-api`](mona-api/)         | Axum + SQLx control plane (Postgres metadata)                         |
+| [`mona-edge`](mona-edge/)       | Axum health + Tokio TLS/SNI edge proxy for MongoDB connections        |
+| [`mona-app`](mona-app/)         | Next.js console (Tailwind + [Base UI](https://base-ui.com/))          |
+| [`mona-types`](mona-types/)     | TypeSpec source of truth; generates OpenAPI + TS client + Rust models |
+| [`infra/k8s`](infra/k8s/)       | Local kind cluster and Kubernetes manifests                           |
 
 ## What this slice does
 
 Create a logical database and get a hostname-based connection string:
 
 ```text
-mongodb://db-<id>.mona.local:27017/?tls=true&tlsAllowInvalidCertificates=true
+mongodb://db-<id>.mona.localhost:27017/?tls=true&tlsAllowInvalidCertificates=true
 ```
 
-Each database runs as its own `mona-db` Deployment (scale to 0 after 5 minutes idle). An edge proxy terminates TLS, reads SNI, asks the control plane for the backend, and wakes the pod if needed.
+Logical databases are multiplexed onto a single shared `mona-gateway` pod with an in-process SlateDB handle LRU. The edge proxy terminates TLS, reads SNI, asks the control plane for the gateway backend, and sends a short `MONA <db_id>` preamble before forwarding MongoDB bytes.
 
-Auth, shared gateway fleets, branching, and billing are intentionally out of scope for now.
+Auth, multi-replica writer leases, branching, and billing are intentionally out of scope for now.
 
 ## Prerequisites
 
@@ -38,25 +40,27 @@ Auth, shared gateway fleets, branching, and billing are intentionally out of sco
 tilt up
 ```
 
-Tilt creates/uses the `mona` kind cluster, builds `mona-db` / `mona-api` / `mona-edge`, applies Postgres + control plane + edge, and runs the Next.js console. Open the Tilt UI (usually http://localhost:10350) for build/deploy status.
+Tilt creates/uses the `mona` kind cluster, builds `mona-api` / `mona-gateway` / `mona-edge`, applies Postgres + control plane + gateway + edge, and runs the Next.js console. Open the Tilt UI (usually http://localhost:10350) for build/deploy status.
 
 Once ready:
 
-| Service        | URL / address |
-| -------------- | ------------- |
-| Console        | http://localhost:3000 |
-| Control plane  | http://localhost:8000 |
-| Mongo edge     | `mongodb://db-<id>.mona.local:27017/?tls=true&tlsAllowInvalidCertificates=true` |
+| Service       | URL / address                                                                       |
+| ------------- | ----------------------------------------------------------------------------------- |
+| Console       | http://localhost:3000                                                               |
+| Control plane | http://localhost:8000                                                               |
+| Mongo edge    | `mongodb://db-<id>.mona.localhost:27017/?tls=true&tlsAllowInvalidCertificates=true` |
 
 Host ports `8000` and `27017` come from kind NodePort mappings in [`infra/k8s/kind.yaml`](infra/k8s/kind.yaml).
 
-### DNS for `*.mona.local`
+### Add a hosts entry after creating a database
 
-Point database hostnames at localhost. After creating a database named in the UI, add:
+After you create a database in the console (or via `POST /databases`), copy its hostname (for example `db-abc12345.mona.localhost`) and point it at loopback:
 
 ```bash
-sudo sh -c 'echo "127.0.0.1 db-<id>.mona.local" >> /etc/hosts'
+sudo sh -c 'echo "127.0.0.1 db-<id>.mona.localhost" >> /etc/hosts'
 ```
+
+Replace `db-<id>.mona.localhost` with the exact hostname from the UI or API response. On some OSes, names under `.localhost` already resolve to `127.0.0.1` without this step; if `mongosh` or the driver fails with a DNS / “nodename nor servname” error, add the hosts line above.
 
 ### Manual cluster bring-up (without Tilt)
 
@@ -68,34 +72,51 @@ cd mona-app && npm install && NEXT_PUBLIC_MONA_API_URL=http://localhost:8000 npm
 ## Smoke test with mongosh
 
 ```bash
-mongosh "mongodb://db-<id>.mona.local:27017/?tls=true&tlsAllowInvalidCertificates=true"
+mongosh "mongodb://db-<id>.mona.localhost:27017/?tls=true&tlsAllowInvalidCertificates=true"
 ```
 
 Then:
 
 ```js
-db.smoke.insertOne({ ok: true })
+const { insertedId } = db.smoke.insertOne({ ok: true, n: 1 })
+db.smoke.find({ ok: true })
+db.smoke.updateOne({ ok: true }, { $set: { n: 2 } })
+db.smoke.find({ _id: insertedId })
+db.smoke.deleteOne({ ok: true })
 db.smoke.find()
 ```
 
 ## Control plane API
 
-TypeSpec lives in [`mona-types`](mona-types/). Regenerate OpenAPI + TS types:
+TypeSpec lives in [`mona-types`](mona-types/). Regenerate OpenAPI, the TypeScript client, and Rust models (`mona-api/src/models.rs`):
 
 ```bash
 cd mona-types && npm install && npm run build
 ```
 
-Useful endpoints:
+Database CRUD:
 
 - `POST /databases` `{ "name": "analytics" }`
 - `GET /databases`
 - `GET /databases/{id}`
-- `GET /internal/routing/{hostname}` (edge)
-- `POST /internal/activity/{id}` (edge)
+- `PATCH /databases/{id}` `{ "name": "renamed" }`
+- `DELETE /databases/{id}`
+
+Internal (edge):
+
+- `GET /internal/routing/{hostname}`
+- `POST /internal/activity/{id}`
+
+The Next.js console uses React Query hooks backed by the generated `@mona/types/client`.
 
 ## Development notes
 
-- Engine image listens on `0.0.0.0:27017` and stores data under `/data` (PVC per database).
-- Idle sleeper in `mona-api` scales Deployments to 0 after `IDLE_TIMEOUT_SECONDS` (default 300).
-- Next infra step after this vertical slice: shared gateway fleet with SlateDB handle LRU + writer leases (instead of one pod per database).
+- Shared gateway listens on `0.0.0.0:27017`, stores tenant data under `/data/{db_id}/`, and exposes Axum `/healthz` on `:8080`.
+- Edge → gateway tenant handoff: `MONA <db_id>\n` then MongoDB wire protocol.
+- Control plane is Rust (Axum + SQLx); migrations run on process start. Create is metadata-only; storage opens lazily on first connect.
+- Idle sleeper marks databases `sleeping` in Postgres after `IDLE_TIMEOUT_SECONDS` (default 300); the gateway pod stays up and evicts LRU handles under memory pressure.
+- Next infra step: multi-replica gateway fleet with Postgres-backed writer leases.
+
+### Migrating from per-DB pods
+
+Older clusters that created `mona-db-*` Deployments/Services/PVCs can delete those resources manually; new databases use the shared gateway only.

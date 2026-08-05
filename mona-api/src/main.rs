@@ -1,13 +1,12 @@
 mod config;
 mod db;
 mod error;
-mod k8s;
 mod models;
 mod routes;
+mod row;
 mod services;
 
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::time::Duration;
 
 use axum::routing::{get, post};
@@ -19,13 +18,11 @@ use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 use crate::config::Config;
-use crate::k8s::K8sProvisioner;
 
 #[derive(Clone)]
 pub struct AppState {
     pub config: Config,
     pub pool: PgPool,
-    pub provisioner: Arc<K8sProvisioner>,
 }
 
 #[tokio::main]
@@ -36,11 +33,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = Config::from_env();
     let pool = db::connect(&config).await?;
-    let provisioner = Arc::new(K8sProvisioner::new(config.clone()).await);
     let state = AppState {
         config: config.clone(),
         pool: pool.clone(),
-        provisioner: provisioner.clone(),
     };
 
     tokio::spawn(sleep_loop(state.clone()));
@@ -48,7 +43,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Router::new()
         .route("/healthz", get(routes::healthz))
         .route("/databases", get(routes::list_databases).post(routes::create_database))
-        .route("/databases/{id}", get(routes::get_database))
+        .route(
+            "/databases/{id}",
+            get(routes::get_database)
+                .patch(routes::update_database)
+                .delete(routes::delete_database),
+        )
         .route("/internal/routing/{hostname}", get(routes::routing))
         .route("/internal/activity/{id}", post(routes::activity))
         .layer(CorsLayer::permissive())
@@ -66,10 +66,9 @@ async fn sleep_loop(state: AppState) {
     let interval = Duration::from_secs(state.config.sleep_poll_seconds);
     loop {
         tokio::time::sleep(interval).await;
-        match services::sleep_idle_databases(&state.pool, &state.config, &state.provisioner).await
-        {
+        match services::sleep_idle_databases(&state.pool, &state.config).await {
             Ok(0) => {}
-            Ok(n) => info!("scaled {n} idle database(s) to zero"),
+            Ok(n) => info!("marked {n} idle database(s) sleeping"),
             Err(err) => error!(error = %err, "idle sleeper failed"),
         }
     }
