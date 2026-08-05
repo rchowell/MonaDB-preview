@@ -1,5 +1,9 @@
 import type { Metadata } from "next";
 import { Fraunces, Source_Sans_3 } from "next/font/google";
+
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
+
 import "./globals.css";
 
 const display = Fraunces({
@@ -19,9 +23,12 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="en" className={`${display.variable} ${sans.variable} h-full antialiased`}>
-      <body className="min-h-full flex flex-col font-[family-name:var(--font-sans)]">
-        {children}
+    <html
+      lang="en"
+      className={cn("h-full antialiased font-sans", display.variable, sans.variable)}
+    >
+      <body className="min-h-full flex flex-col">
+        <TooltipProvider>{children}</TooltipProvider>
       </body>
     </html>
   );

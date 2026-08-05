@@ -1,5 +1,5 @@
-import { DatabaseConsole } from "@/components/DatabaseConsole";
+import { redirect } from "next/navigation";
 
 export default function Home() {
-  return <DatabaseConsole />;
+  redirect("/databases");
 }
