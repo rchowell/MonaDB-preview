@@ -1,12 +1,17 @@
 "use client";
 
-import { startTransition, useEffect, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { createDatabase, listDatabases } from "@/lib/api";
-import type { Database } from "@/lib/types";
+import {
+  useCreateDatabase,
+  useDatabases,
+  useDeleteDatabase,
+  useUpdateDatabase,
+} from "@/hooks/use-databases";
+import type { Database } from "@/lib/mona-client";
 import { cn } from "@/lib/utils";
 
 function statusVariant(
@@ -39,39 +44,48 @@ function statusClass(status: Database["status"]): string {
 
 export function DatabaseConsole() {
   const [name, setName] = useState("");
-  const [databases, setDatabases] = useState<Database[]>([]);
-  const [selected, setSelected] = useState<Database | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [rename, setRename] = useState("");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  async function refresh() {
-    const rows = await listDatabases();
-    setDatabases(rows);
-  }
+  const { data: databases = [], error: listError, isLoading } = useDatabases();
+  const createDatabase = useCreateDatabase();
+  const updateDatabase = useUpdateDatabase();
+  const deleteDatabase = useDeleteDatabase();
 
-  useEffect(() => {
-    startTransition(() => {
-      refresh().catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : "Failed to load databases");
-      });
-    });
-  }, []);
+  const active =
+    databases.find((db) => db.id === selectedId) ?? databases[0] ?? null;
+
+  const error =
+    listError?.message ??
+    createDatabase.error?.message ??
+    updateDatabase.error?.message ??
+    deleteDatabase.error?.message ??
+    null;
 
   async function onCreate(event: FormEvent) {
     event.preventDefault();
-    setError(null);
-    setLoading(true);
-    try {
-      const created = await createDatabase(name.trim());
-      setSelected(created);
-      setName("");
-      await refresh();
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to create database");
-    } finally {
-      setLoading(false);
-    }
+    const created = await createDatabase.mutateAsync(name.trim());
+    setSelectedId(created.id);
+    setName("");
+  }
+
+  async function onRename(event: FormEvent) {
+    event.preventDefault();
+    if (!active) return;
+    const updated = await updateDatabase.mutateAsync({
+      id: active.id,
+      name: rename.trim(),
+    });
+    setSelectedId(updated.id);
+    setRename("");
+  }
+
+  async function onDelete() {
+    if (!active) return;
+    const id = active.id;
+    await deleteDatabase.mutateAsync(id);
+    setSelectedId(null);
   }
 
   async function copyConnection(value: string) {
@@ -79,8 +93,6 @@ export function DatabaseConsole() {
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1500);
   }
-
-  const active = selected ?? databases[0] ?? null;
 
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-8 p-6">
@@ -104,8 +116,12 @@ export function DatabaseConsole() {
             placeholder="analytics"
           />
         </label>
-        <Button type="submit" disabled={loading || name.trim().length === 0} size="lg">
-          {loading ? "Creating…" : "Create database"}
+        <Button
+          type="submit"
+          disabled={createDatabase.isPending || name.trim().length === 0}
+          size="lg"
+        >
+          {createDatabase.isPending ? "Creating…" : "Create database"}
         </Button>
       </form>
 
@@ -154,6 +170,35 @@ export function DatabaseConsole() {
               </Button>
             </div>
           </div>
+
+          <form onSubmit={onRename} className="flex flex-col gap-3 sm:flex-row sm:items-end">
+            <label className="flex flex-1 flex-col gap-2 text-sm text-foreground">
+              Rename
+              <Input
+                required
+                value={rename}
+                onChange={(event) => setRename(event.target.value)}
+                placeholder={active.name}
+              />
+            </label>
+            <Button
+              type="submit"
+              variant="outline"
+              disabled={updateDatabase.isPending || rename.trim().length === 0}
+              size="lg"
+            >
+              {updateDatabase.isPending ? "Saving…" : "Save name"}
+            </Button>
+          </form>
+
+          <Button
+            type="button"
+            variant="destructive"
+            disabled={deleteDatabase.isPending}
+            onClick={() => void onDelete()}
+          >
+            {deleteDatabase.isPending ? "Deleting…" : "Delete database"}
+          </Button>
         </section>
       ) : null}
 
@@ -161,7 +206,9 @@ export function DatabaseConsole() {
         <h2 className="font-[family-name:var(--font-display)] text-xl tracking-tight">
           Your databases
         </h2>
-        {databases.length === 0 ? (
+        {isLoading ? (
+          <p className="text-sm text-muted-foreground">Loading…</p>
+        ) : databases.length === 0 ? (
           <p className="text-sm text-muted-foreground">No databases yet.</p>
         ) : (
           <ul className="divide-y border-y">
@@ -169,7 +216,7 @@ export function DatabaseConsole() {
               <li key={db.id}>
                 <button
                   type="button"
-                  onClick={() => setSelected(db)}
+                  onClick={() => setSelectedId(db.id)}
                   className="flex w-full items-center justify-between gap-4 py-3 text-left transition hover:bg-muted/50"
                 >
                   <div>
