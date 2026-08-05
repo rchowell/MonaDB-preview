@@ -3,9 +3,19 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": "./generated/openapi.ts",
+    "./client": "./generated/client.ts",
+    "./openapi.json": "./generated/openapi.json"
+  },
   "scripts": {
-    "build": "tsp compile . && node ./scripts/generate-ts.mjs",
-    "compile": "tsp compile ."
+    "build": "tsp compile . && node ./scripts/generate-ts.mjs && node ./scripts/generate-rust.mjs",
+    "compile": "tsp compile .",
+    "generate:ts": "node ./scripts/generate-ts.mjs",
+    "generate:rust": "node ./scripts/generate-rust.mjs"
+  },
+  "dependencies": {
+    "openapi-fetch": "^0.15.0"
   },
   "devDependencies": {
     "@typespec/compiler": "^1.13.0",

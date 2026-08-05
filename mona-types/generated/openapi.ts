@@ -9,7 +9,10 @@ export interface paths {
         /** List databases */
         get: operations["Databases_list"];
         put?: never;
-        /** Create a database */
+        /**
+         * Create a database
+         * @description Returns 400 with ErrorBody when the name is invalid.
+         */
         post: operations["Databases_create"];
         delete?: never;
         options?: never;
@@ -24,14 +27,25 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get a database by id */
+        /**
+         * Get a database by id
+         * @description Returns 404 with ErrorBody when the database does not exist.
+         */
         get: operations["Databases_get"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Delete a database
+         * @description Returns 404 with ErrorBody when the database does not exist.
+         */
+        delete: operations["Databases_delete"];
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * Update a database
+         * @description Returns 400 with ErrorBody for invalid names, or 404 when missing.
+         */
+        patch: operations["Databases_update"];
         trace?: never;
     };
 }
@@ -64,8 +78,13 @@ export interface components {
          * @enum {string}
          */
         DatabaseStatus: "pending" | "ready" | "sleeping" | "error";
-        NotFoundError: {
+        /** @description Error payload returned for 4xx/5xx responses (`{ detail: string }`). */
+        ErrorBody: {
             detail: string;
+        };
+        /** @description Request body for updating a database. */
+        UpdateDatabaseRequest: {
+            name: string;
         };
     };
     responses: never;
@@ -140,13 +159,50 @@ export interface operations {
                     "application/json": components["schemas"]["Database"];
                 };
             };
-            /** @description The server cannot find the requested resource. */
-            404: {
+        };
+    };
+    Databases_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description There is no content to send for this request, but the headers may be useful. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    Databases_update: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateDatabaseRequest"];
+            };
+        };
+        responses: {
+            /** @description The request has succeeded. */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["NotFoundError"];
+                    "application/json": components["schemas"]["Database"];
                 };
             };
         };

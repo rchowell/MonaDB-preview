@@ -46,6 +46,18 @@ model CreateDatabaseRequest {
   name: string;
 }
 
+@doc("Request body for updating a database.")
+model UpdateDatabaseRequest {
+  @minLength(1)
+  @maxLength(64)
+  name: string;
+}
+
+@doc("Error payload returned for 4xx/5xx responses (`{ detail: string }`).")
+model ErrorBody {
+  detail: string;
+}
+
 @route("/databases")
 @tag("Databases")
 interface Databases {
@@ -55,6 +67,7 @@ interface Databases {
 
   @post
   @summary("Create a database")
+  @doc("Returns 400 with ErrorBody when the name is invalid.")
   create(@body body: CreateDatabaseRequest): {
     @statusCode statusCode: 201;
     @body body: Database;
@@ -63,12 +76,20 @@ interface Databases {
   @get
   @route("/{id}")
   @summary("Get a database by id")
-  get(@path id: string): Database | {
-    @statusCode statusCode: 404;
-    @body body: NotFoundError;
-  };
-}
+  @doc("Returns 404 with ErrorBody when the database does not exist.")
+  get(@path id: string): Database;
 
-model NotFoundError {
-  detail: string;
+  @patch
+  @route("/{id}")
+  @summary("Update a database")
+  @doc("Returns 400 with ErrorBody for invalid names, or 404 when missing.")
+  update(@path id: string, @body body: UpdateDatabaseRequest): Database;
+
+  @delete
+  @route("/{id}")
+  @summary("Delete a database")
+  @doc("Returns 404 with ErrorBody when the database does not exist.")
+  delete(@path id: string): {
+    @statusCode statusCode: 204;
+  };
 }

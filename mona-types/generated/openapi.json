@@ -37,6 +37,7 @@
       "post": {
         "operationId": "Databases_create",
         "summary": "Create a database",
+        "description": "Returns 400 with ErrorBody when the name is invalid.",
         "parameters": [],
         "responses": {
           "201": {
@@ -69,6 +70,7 @@
       "get": {
         "operationId": "Databases_get",
         "summary": "Get a database by id",
+        "description": "Returns 404 with ErrorBody when the database does not exist.",
         "parameters": [
           {
             "name": "id",
@@ -89,16 +91,69 @@
                 }
               }
             }
-          },
-          "404": {
-            "description": "The server cannot find the requested resource.",
+          }
+        },
+        "tags": [
+          "Databases"
+        ]
+      },
+      "patch": {
+        "operationId": "Databases_update",
+        "summary": "Update a database",
+        "description": "Returns 400 with ErrorBody for invalid names, or 404 when missing.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The request has succeeded.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/NotFoundError"
+                  "$ref": "#/components/schemas/Database"
                 }
               }
             }
+          }
+        },
+        "tags": [
+          "Databases"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateDatabaseRequest"
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "Databases_delete",
+        "summary": "Delete a database",
+        "description": "Returns 404 with ErrorBody when the database does not exist.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "There is no content to send for this request, but the headers may be useful. "
           }
         },
         "tags": [
@@ -171,7 +226,7 @@
         ],
         "description": "Lifecycle status of a logical database."
       },
-      "NotFoundError": {
+      "ErrorBody": {
         "type": "object",
         "required": [
           "detail"
@@ -180,7 +235,22 @@
           "detail": {
             "type": "string"
           }
-        }
+        },
+        "description": "Error payload returned for 4xx/5xx responses (`{ detail: string }`)."
+      },
+      "UpdateDatabaseRequest": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        },
+        "description": "Request body for updating a database."
       }
     }
   },
