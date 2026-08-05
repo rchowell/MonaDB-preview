@@ -1,0 +1,194 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "MonaDB Control Plane",
+    "version": "0.0.0"
+  },
+  "tags": [
+    {
+      "name": "Databases"
+    }
+  ],
+  "paths": {
+    "/databases": {
+      "get": {
+        "operationId": "Databases_list",
+        "summary": "List databases",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "The request has succeeded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Database"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Databases"
+        ]
+      },
+      "post": {
+        "operationId": "Databases_create",
+        "summary": "Create a database",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": "The request has succeeded and a new resource has been created as a result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Database"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Databases"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateDatabaseRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/databases/{id}": {
+      "get": {
+        "operationId": "Databases_get",
+        "summary": "Get a database by id",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The request has succeeded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Database"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The server cannot find the requested resource.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Databases"
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CreateDatabaseRequest": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        },
+        "description": "Request body for creating a database."
+      },
+      "Database": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "hostname",
+          "connectionString",
+          "status",
+          "createdAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Stable identifier used in hostnames (e.g. abc123)."
+          },
+          "name": {
+            "type": "string",
+            "description": "Human-readable name."
+          },
+          "hostname": {
+            "type": "string",
+            "description": "SNI hostname for this database."
+          },
+          "connectionString": {
+            "type": "string",
+            "description": "MongoDB connection URI including TLS query params for local use."
+          },
+          "status": {
+            "$ref": "#/components/schemas/DatabaseStatus"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "ISO-8601 creation timestamp."
+          }
+        },
+        "description": "A provisioned MonaDB logical database."
+      },
+      "DatabaseStatus": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "ready",
+          "sleeping",
+          "error"
+        ],
+        "description": "Lifecycle status of a logical database."
+      },
+      "NotFoundError": {
+        "type": "object",
+        "required": [
+          "detail"
+        ],
+        "properties": {
+          "detail": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8000",
+      "description": "Local development",
+      "variables": {}
+    }
+  ]
+}

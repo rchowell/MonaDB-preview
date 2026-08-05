@@ -1,0 +1,10 @@
+**/target/
+**/node_modules/
+**/.venv/
+**/__pycache__/
+**/*.pyc
+**/.git/
+mona-db/docs/
+mona-db/scripts/
+mona-types/tsp-output/
+.tilt-api-tmp/

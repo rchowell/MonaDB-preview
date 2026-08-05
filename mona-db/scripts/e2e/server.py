@@ -17,6 +17,7 @@ LISTENING_RE = re.compile(r"MonaDB listening on (?P<addr>\S+)")
 class MonaDBServer:
     process: subprocess.Popen[str]
     addr: str
+    data_dir: Path | None = None
 
     @property
     def uri(self) -> str:
@@ -36,15 +37,24 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def start(bind_addr: str = "127.0.0.1:0", timeout_s: float = 30.0) -> MonaDBServer:
+def start(
+    bind_addr: str = "127.0.0.1:0",
+    data_dir: Path | None = None,
+    timeout_s: float = 30.0,
+) -> MonaDBServer:
     """Build and start monadb, returning once it is accepting connections."""
     root = repo_root()
     binary = os.environ.get("MONADB_BIN")
 
+    cmd: list[str]
     if binary:
         cmd = [binary, "--addr", bind_addr]
     else:
         cmd = ["cargo", "run", "--quiet", "--", "--addr", bind_addr]
+
+    if data_dir is not None:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        cmd.extend(["--data-dir", str(data_dir)])
 
     process = subprocess.Popen(
         cmd,
@@ -67,7 +77,11 @@ def start(bind_addr: str = "127.0.0.1:0", timeout_s: float = 30.0) -> MonaDBServ
         print(f"[monadb] {line.rstrip()}")
         match = LISTENING_RE.search(line)
         if match:
-            return MonaDBServer(process=process, addr=match.group("addr"))
+            return MonaDBServer(
+                process=process,
+                addr=match.group("addr"),
+                data_dir=data_dir,
+            )
 
     output = process.stdout.read() if process.stdout else ""
     if process.poll() is None:
@@ -84,3 +98,7 @@ def main() -> None:
         pass
     finally:
         server.stop()
+
+
+if __name__ == "__main__":
+    main()

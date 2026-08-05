@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ${K8S_NAME}-data
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/name: mona-db
+    app.kubernetes.io/instance: ${K8S_NAME}
+    mona.db/id: ${DB_ID}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi

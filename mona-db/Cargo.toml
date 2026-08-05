@@ -1,0 +1,14 @@
+[package]
+name = "monadb"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bson = "2.13"
+bytes = "1.9"
+slatedb = "0.15"
+thiserror = "2.0"
+tokio = { version = "1.43", features = ["full"] }
+
+[dev-dependencies]
+tokio-test = "0.4"

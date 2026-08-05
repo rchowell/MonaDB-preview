@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mona-edge
+  namespace: mona
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mona-edge
+  template:
+    metadata:
+      labels:
+        app: mona-edge
+    spec:
+      containers:
+        - name: edge
+          image: mona-edge:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 27017
+          env:
+            - name: CONTROL_PLANE_URL
+              value: http://mona-api.mona.svc.cluster.local:8000
+            - name: EDGE_LISTEN
+              value: "0.0.0.0:27017"
+            - name: TLS_CERT
+              value: /certs/tls.crt
+            - name: TLS_KEY
+              value: /certs/tls.key
+          volumeMounts:
+            - name: certs
+              mountPath: /certs
+              readOnly: true
+      volumes:
+        - name: certs
+          secret:
+            secretName: mona-edge-tls
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mona-edge
+  namespace: mona
+spec:
+  type: NodePort
+  selector:
+    app: mona-edge
+  ports:
+    - name: mongodb-tls
+      port: 27017
+      targetPort: 27017
+      nodePort: 30017
